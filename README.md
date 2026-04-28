@@ -1,7 +1,13 @@
 # sunworks_scheduler
 
-Streamlit-based project schedule tracker and Gantt chart visualiser.
+Streamlit-based project schedule tracker and Gantt chart visualiser for solar projects in SunWorks.
 Built on the same stack as **sunworks_hybrid_optimizer** (Streamlit + Plotly + Pandas + SQLite).
+
+---
+
+## Overview
+
+This application is designed to track and visualize solar project schedules within the SunWorks ecosystem. It provides tools for managing project timelines, dependencies, and progress updates specifically tailored for solar energy projects.
 
 ---
 
