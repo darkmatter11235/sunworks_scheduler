@@ -135,7 +135,13 @@ def _gantt_figure(df: pd.DataFrame, today: date, height: int = 700) -> go.Figure
     )
 
     fig.update_yaxes(autorange="reversed", title="")
-    fig.update_xaxes(title="Date")
+    fig.update_xaxes(
+        title="Date",
+        range=[
+            gdf["start_date"].min() - pd.Timedelta(days=3),
+            gdf["finish_date"].max() + pd.Timedelta(days=3),
+        ],
+    )
     fig.update_layout(
         height=height,
         legend_title="Phase",
