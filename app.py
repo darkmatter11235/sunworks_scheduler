@@ -122,8 +122,16 @@ def _gantt_figure(df: pd.DataFrame, today: date, height: int = 700) -> go.Figure
         x=pd.Timestamp(today),
         line_dash="dash",
         line_color="red",
-        annotation_text="Today",
-        annotation_position="top",
+    )
+    fig.add_annotation(
+        x=pd.Timestamp(today),
+        y=1,
+        yref="paper",
+        text="Today",
+        showarrow=False,
+        font=dict(color="red"),
+        xanchor="left",
+        yanchor="top",
     )
 
     fig.update_yaxes(autorange="reversed", title="")
