@@ -98,11 +98,15 @@ def parse_schedule_csv(
         # Treat first row as header
         header_row_idx = 0
 
+    # Seek back to start for file-like objects (StringIO/BytesIO cursor is at EOF after first read)
+    if hasattr(source, "seek"):
+        source.seek(0)
+
     df = pd.read_csv(
-        source if not isinstance(source, (str, Path)) else source,
-        skiprows=header_row_idx,
+        source,
+        skiprows=header_row_idx if header_row_idx > 0 else None,
         dtype=str,
-    ) if header_row_idx > 0 else pd.read_csv(source, dtype=str)
+    )
 
     # Normalise column names
     df.columns = [str(c).strip().lower().replace(" ", "_").replace("%", "pct") for c in df.columns]
