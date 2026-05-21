@@ -254,10 +254,15 @@ with st.sidebar:
                 site_row = db.get_site(st.session_state.site_id) or {}
                 anchor_val = site_row.get("anchor_start_date")
                 if anchor_val:
-                    try:
-                        anchor_default = datetime.strptime(anchor_val, "%Y-%m-%d").date()
-                    except ValueError:
-                        anchor_default = date.today()
+                    if isinstance(anchor_val, datetime):
+                        anchor_default = anchor_val.date()
+                    elif isinstance(anchor_val, date):
+                        anchor_default = anchor_val
+                    else:
+                        try:
+                            anchor_default = datetime.strptime(str(anchor_val), "%Y-%m-%d").date()
+                        except (ValueError, TypeError):
+                            anchor_default = date.today()
                 else:
                     anchor_default = date.today()
 
