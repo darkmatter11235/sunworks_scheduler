@@ -16,7 +16,9 @@ This application is designed to track and visualize solar project schedules with
 | Feature | Detail |
 |---|---|
 | Multi-project support | Create and switch between independent projects |
-| CSV / Excel import | MS-Project style exports (WBS, Duration, Start, Finish, Predecessors, % Complete) |
+| Multi-site SQL model | Each project can have many sites, each site reuses shared task templates with site-specific quantities |
+| Relative planning engine | Planned task dates can be derived from formula dependencies and stored as offsets from site anchor start |
+| CSV / Excel import | Supports both MS-Project style schedules and Dakansy-style ACTIVITY/QUANTITY schedules |
 | Interactive Gantt | Colour-coded by WBS phase, progress overlay, today marker, date window filter |
 | Today's tasks | Daily view of every leaf task active on a selected date |
 | Progress updates | Slider update + date adjustment; every change logged with timestamp |
@@ -48,7 +50,36 @@ The app opens at `http://localhost:8501`.
 ## Importing a schedule
 
 1. Click **➕ New project** in the sidebar and give it a name.
-2. Click **📥 Import schedule** and upload your CSV or Excel file.
+2. (Recommended) create a site in **🏗️ Sites**.
+3. Click **📥 Import schedule**, pick the import mode, then upload your CSV or Excel file.
+
+### Site quantity schedule mode (new)
+
+Use this for Dakansy-style files where each row has an activity and quantity for a site.
+
+Typical columns:
+
+```
+S.NO., ACTIVITY, QUANTITY, UNIT, PLANNED START, PLANNED DURATION, PLANNED FINISH,
+ACTUAL START, ACTUAL DURATION, ACTUAL FINISH, PERCENT COMPLETE
+```
+
+In this mode:
+
+- A **site** is created/selected per import.
+- Activities are stored in shared **task_templates** at project level.
+- Imported rows become per-site task instances in **tasks** with `quantity` and `unit`.
+
+### Relative formula schedule mode (Excel)
+
+Use this for formula-driven sheets (like `Relative_Formula_Schedule.xlsx`) where planned timing is calculated from dependencies.
+
+In this mode:
+
+- Planned formulas from Excel are persisted per task (`planned_start_formula`, `planned_finish_formula`).
+- Dependencies are extracted from formula references (`E` => SS, `G` => FS with lag) into `task_formula_dependencies`.
+- Each task stores computed relative offsets (`planned_start_offset_days`, `planned_finish_offset_days`) from the first task start (site anchor).
+- The selected site stores `anchor_start_date`; changing anchor in UI recalculates all planned dates from stored offsets.
 
 ### Supported CSV format
 
@@ -84,9 +115,19 @@ scheduler.db    — created automatically on first run (gitignored)
 
 ```
 projects        id, name, description, created_at, is_active
+sites           id, project_id, name, description, anchor_start_date,
+                created_at, is_active
+task_templates  id, project_id, task_name, default_unit, default_duration,
+                default_wbs, wbs_level, is_summary, created_at, updated_at
 tasks           id, project_id, row_num, wbs, task_name, duration_days,
                 start_date, finish_date, predecessors, pct_complete,
-                wbs_level, is_summary, notes, updated_at
+                wbs_level, is_summary, notes, updated_at,
+                site_id, template_id, quantity, unit,
+                planned_start_formula, planned_finish_formula,
+                planned_start_offset_days, planned_finish_offset_days
+task_formula_dependencies
+                id, project_id, site_id, from_row_num, to_row_num,
+                dep_type, lag_days, source_formula
 daily_logs      id, task_id, log_date, pct_before, pct_after, comment,
                 logged_by, created_at
 task_dependencies  id, project_id, from_row_num, to_row_num, dep_type, lag_days

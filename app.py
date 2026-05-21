@@ -28,6 +28,7 @@ db.init_db()
 # ─── Session state ────────────────────────────────────────────────────────────
 for key, default in [
     ("project_id", None),
+    ("site_id", None),
     ("tasks_df", None),
 ]:
     if key not in st.session_state:
@@ -37,8 +38,8 @@ for key, default in [
 WBS_COLORS = px.colors.qualitative.Plotly  # 10-color cycle
 
 
-def _load_tasks(project_id: int) -> pd.DataFrame:
-    rows = db.get_tasks(project_id)
+def _load_tasks(project_id: int, site_id: int | None = None) -> pd.DataFrame:
+    rows = db.get_tasks(project_id, site_id=site_id)
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -188,7 +189,30 @@ with st.sidebar:
         sel_id = project_ids[project_names.index(sel_name)]
         if st.session_state.project_id != sel_id:
             st.session_state.project_id = sel_id
-            st.session_state.tasks_df = _load_tasks(sel_id)
+            st.session_state.site_id = None
+
+        project_sites = db.list_sites(st.session_state.project_id)
+        if project_sites:
+            site_names = [s["name"] for s in project_sites]
+            site_ids = [s["id"] for s in project_sites]
+
+            if st.session_state.site_id not in site_ids:
+                st.session_state.site_id = site_ids[0]
+
+            selected_site_name = st.selectbox(
+                "Select site",
+                site_names,
+                index=site_ids.index(st.session_state.site_id),
+            )
+            st.session_state.site_id = site_ids[site_names.index(selected_site_name)]
+
+            st.session_state.tasks_df = _load_tasks(
+                sel_id,
+                site_id=st.session_state.site_id,
+            )
+        else:
+            st.session_state.site_id = None
+            st.session_state.tasks_df = _load_tasks(sel_id, site_id=None)
     else:
         st.info("No projects yet. Import a schedule below.")
 
@@ -202,17 +226,70 @@ with st.sidebar:
             if new_name.strip():
                 pid = db.create_project(new_name.strip(), new_desc.strip())
                 st.session_state.project_id = pid
+                st.session_state.site_id = None
                 st.session_state.tasks_df = pd.DataFrame()
                 st.success(f"Created project '{new_name}'")
                 st.rerun()
             else:
                 st.warning("Enter a project name.")
 
+    with st.expander("🏗️ Sites"):
+        if st.session_state.project_id is None:
+            st.warning("Create or select a project first.")
+        else:
+            site_name = st.text_input("New site name", key="new_site_name")
+            site_desc = st.text_area("Site description", key="new_site_desc", height=60)
+            if st.button("Create site"):
+                if site_name.strip():
+                    sid = db.create_site(st.session_state.project_id, site_name.strip(), site_desc.strip())
+                    st.session_state.site_id = sid
+                    st.session_state.tasks_df = _load_tasks(st.session_state.project_id, sid)
+                    st.success(f"Ready for site '{site_name.strip()}'")
+                    st.rerun()
+                else:
+                    st.warning("Enter a site name.")
+
+            if st.session_state.site_id is not None:
+                st.divider()
+                site_row = db.get_site(st.session_state.site_id) or {}
+                anchor_val = site_row.get("anchor_start_date")
+                if anchor_val:
+                    try:
+                        anchor_default = datetime.strptime(anchor_val, "%Y-%m-%d").date()
+                    except ValueError:
+                        anchor_default = date.today()
+                else:
+                    anchor_default = date.today()
+
+                anchor_input = st.date_input("Site anchor start", value=anchor_default, key="site_anchor_start")
+                if st.button("Recalculate planned dates"):
+                    db.recompute_site_task_dates(st.session_state.site_id, str(anchor_input))
+                    st.session_state.tasks_df = _load_tasks(
+                        st.session_state.project_id,
+                        site_id=st.session_state.site_id,
+                    )
+                    st.success("Recalculated planned dates from relative offsets.")
+                    st.rerun()
+
     # ── Import schedule ──
     with st.expander("📥 Import schedule"):
         if st.session_state.project_id is None:
             st.warning("Create or select a project first.")
         else:
+            import_mode = st.radio(
+                "Import mode",
+                ["Site quantity schedule", "Relative formula schedule (Excel)", "MS Project schedule"],
+                horizontal=True,
+                help="Use relative formula mode for formula-driven planned start/finish in Excel.",
+            )
+
+            import_site_name = st.text_input(
+                "Site name for import",
+                value=(db.get_site(st.session_state.site_id) or {}).get("name", "")
+                if st.session_state.site_id is not None else "",
+                key="import_site_name",
+            )
+
             uploaded = st.file_uploader(
                 "Upload CSV or Excel",
                 type=["csv", "xlsx", "xls"],
@@ -221,18 +298,67 @@ with st.sidebar:
             if uploaded is not None:
                 try:
                     raw = uploaded.read()
-                    if uploaded.name.endswith(".csv"):
-                        tasks = loader.parse_schedule_csv(
-                            StringIO(raw.decode("utf-8", errors="replace")),
-                            st.session_state.project_id,
-                        )
-                    else:
-                        tasks = loader.parse_schedule_excel(
+                    if import_mode == "Site quantity schedule":
+                        if not import_site_name.strip():
+                            raise ValueError("Site name is required for site quantity import.")
+
+                        site_id = db.create_site(st.session_state.project_id, import_site_name.strip())
+                        st.session_state.site_id = site_id
+
+                        if uploaded.name.endswith(".csv"):
+                            tasks = loader.parse_site_quantity_csv(
+                                StringIO(raw.decode("utf-8", errors="replace")),
+                                st.session_state.project_id,
+                            )
+                        else:
+                            # Reuse CSV parser by converting Excel sheet to CSV in-memory.
+                            xl_df = pd.read_excel(BytesIO(raw), dtype=str)
+                            buf = StringIO()
+                            xl_df.to_csv(buf, index=False)
+                            buf.seek(0)
+                            tasks = loader.parse_site_quantity_csv(
+                                buf,
+                                st.session_state.project_id,
+                            )
+
+                        db.upsert_site_tasks(st.session_state.project_id, site_id, tasks)
+                        st.session_state.tasks_df = _load_tasks(st.session_state.project_id, site_id)
+                    elif import_mode == "Relative formula schedule (Excel)":
+                        if not import_site_name.strip():
+                            raise ValueError("Site name is required for relative formula import.")
+                        if not uploaded.name.endswith((".xlsx", ".xls")):
+                            raise ValueError("Relative formula import expects an Excel file (.xlsx/.xls).")
+
+                        site_id = db.create_site(st.session_state.project_id, import_site_name.strip())
+                        st.session_state.site_id = site_id
+
+                        parsed = loader.parse_relative_formula_excel(
                             BytesIO(raw),
                             st.session_state.project_id,
                         )
-                    db.upsert_tasks(st.session_state.project_id, tasks)
-                    st.session_state.tasks_df = _load_tasks(st.session_state.project_id)
+                        db.upsert_site_tasks(
+                            st.session_state.project_id,
+                            site_id,
+                            parsed["tasks"],
+                            dependencies=parsed["dependencies"],
+                        )
+                        db.set_site_anchor_start(site_id, parsed["anchor_start_date"])
+                        st.session_state.tasks_df = _load_tasks(st.session_state.project_id, site_id)
+                    else:
+                        if uploaded.name.endswith(".csv"):
+                            tasks = loader.parse_schedule_csv(
+                                StringIO(raw.decode("utf-8", errors="replace")),
+                                st.session_state.project_id,
+                            )
+                        else:
+                            tasks = loader.parse_schedule_excel(
+                                BytesIO(raw),
+                                st.session_state.project_id,
+                            )
+                        db.upsert_tasks(st.session_state.project_id, tasks)
+                        st.session_state.site_id = None
+                        st.session_state.tasks_df = _load_tasks(st.session_state.project_id)
+
                     st.success(f"Imported {len(tasks)} tasks.")
                     st.rerun()
                 except Exception as exc:
@@ -245,6 +371,7 @@ with st.sidebar:
             if st.button("Confirm delete", type="primary"):
                 db.delete_project(st.session_state.project_id)
                 st.session_state.project_id = None
+                st.session_state.site_id = None
                 st.session_state.tasks_df = None
                 st.rerun()
 
@@ -339,7 +466,7 @@ with tab_gantt:
 
     with st.expander("📋 Task table"):
         display_cols = ["row_num", "wbs", "task_name", "duration_days",
-                        "start_date", "finish_date", "predecessors", "pct_complete"]
+                        "quantity", "unit", "start_date", "finish_date", "predecessors", "pct_complete"]
         st.dataframe(
             gdf[[c for c in display_cols if c in gdf.columns]],
             use_container_width=True,
@@ -351,7 +478,11 @@ with tab_gantt:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_today:
     selected_day = st.date_input("View tasks for date", value=today, key="today_date")
-    active = db.get_tasks_active_on(st.session_state.project_id, str(selected_day))
+    active = db.get_tasks_active_on(
+        st.session_state.project_id,
+        str(selected_day),
+        site_id=st.session_state.site_id,
+    )
 
     if not active:
         st.info(f"No active leaf tasks on {selected_day}.")
@@ -362,7 +493,10 @@ with tab_today:
             color = "#2ecc71" if pct >= 100 else ("#f39c12" if pct > 0 else "#e74c3c")
             with st.container(border=True):
                 c1, c2, c3 = st.columns([4, 1, 1])
-                c1.markdown(f"**{t['wbs']}** — {t['task_name']}")
+                qty_text = ""
+                if t.get("quantity") is not None:
+                    qty_text = f" | Qty: {t['quantity']} {t.get('unit') or ''}".strip()
+                c1.markdown(f"**{t['wbs']}** — {t['task_name']} {qty_text}")
                 c2.markdown(f"<span style='color:{color}; font-weight:bold'>{pct:.0f}%</span>",
                             unsafe_allow_html=True)
                 c3.caption(f"{t['start_date']} → {t['finish_date']}")
@@ -404,7 +538,8 @@ with tab_update:
             st.caption(
                 f"Start: {sel_row['start_date'].date() if pd.notna(sel_row['start_date']) else '—'}  |  "
                 f"Finish: {sel_row['finish_date'].date() if pd.notna(sel_row['finish_date']) else '—'}  |  "
-                f"Duration: {sel_row['duration_days']} days"
+                f"Duration: {sel_row['duration_days']} days  |  "
+                f"Quantity: {sel_row.get('quantity', '—')} {sel_row.get('unit', '')}"
             )
 
             col_a, col_b = st.columns([2, 1])
@@ -425,7 +560,10 @@ with tab_update:
 
             if st.button("💾 Save progress", type="primary"):
                 db.update_task_progress(sel_task_id, float(new_pct), comment)
-                st.session_state.tasks_df = _load_tasks(st.session_state.project_id)
+                st.session_state.tasks_df = _load_tasks(
+                    st.session_state.project_id,
+                    site_id=st.session_state.site_id,
+                )
                 st.success(f"Updated '{sel_row['task_name']}' to {new_pct}%")
                 st.rerun()
 
@@ -444,7 +582,10 @@ with tab_update:
                 if st.button("💾 Update dates"):
                     if new_finish >= new_start:
                         db.update_task_dates(sel_task_id, str(new_start), str(new_finish))
-                        st.session_state.tasks_df = _load_tasks(st.session_state.project_id)
+                        st.session_state.tasks_df = _load_tasks(
+                            st.session_state.project_id,
+                            site_id=st.session_state.site_id,
+                        )
                         st.success("Dates updated.")
                         st.rerun()
                     else:
@@ -474,7 +615,7 @@ with tab_log:
             lambda v: f"+{v:.0f}%" if v >= 0 else f"{v:.0f}%"
         )
         display = log_df[["log_date", "wbs", "task_name", "pct_before",
-                           "pct_after", "change", "comment", "logged_by", "created_at"]]
+                           "pct_after", "change", "comment", "logged_by", "site_name", "created_at"]]
         st.dataframe(display, use_container_width=True, hide_index=True)
 
         # Download
