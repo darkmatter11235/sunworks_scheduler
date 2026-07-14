@@ -4,12 +4,23 @@ Handles all CRUD operations for projects, tasks, and daily logs.
 """
 import sqlite3
 import json
+import pandas as pd
 from pathlib import Path
 from datetime import date, datetime
 from contextlib import contextmanager
 from typing import Optional
 
 DB_PATH = Path(__file__).parent / "scheduler.db"
+
+TABLE_SYNC_ORDER = [
+    "projects",
+    "sites",
+    "task_templates",
+    "tasks",
+    "task_dependencies",
+    "task_formula_dependencies",
+    "daily_logs",
+]
 
 
 @contextmanager
@@ -615,3 +626,55 @@ def get_tasks_active_on(project_id: int, on_date: str, site_id: Optional[int] = 
                 (project_id, on_date, on_date),
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+def has_any_data() -> bool:
+    with get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM projects").fetchone()
+        return bool(row and int(row["cnt"]) > 0)
+
+
+def export_all_tables() -> dict[str, pd.DataFrame]:
+    out: dict[str, pd.DataFrame] = {}
+    with get_conn() as conn:
+        for table in TABLE_SYNC_ORDER:
+            df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
+            out[table] = df
+    return out
+
+
+def _table_columns_for_sync(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return [str(r[1]) for r in rows]
+
+
+def import_all_tables(data: dict[str, pd.DataFrame]) -> None:
+    """Replace local SQLite data using provided table DataFrames."""
+    with get_conn() as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            # Delete in reverse dependency order.
+            for table in reversed(TABLE_SYNC_ORDER):
+                conn.execute(f"DELETE FROM {table}")
+
+            for table in TABLE_SYNC_ORDER:
+                df = data.get(table)
+                if df is None or df.empty:
+                    continue
+
+                cols = _table_columns_for_sync(conn, table)
+                use_cols = [c for c in df.columns if c in cols]
+                if not use_cols:
+                    continue
+
+                insert_df = df[use_cols].copy()
+                insert_df = insert_df.where(pd.notna(insert_df), None)
+                placeholders = ",".join(["?" for _ in use_cols])
+                col_sql = ",".join(use_cols)
+                rows = [tuple(r) for r in insert_df.to_numpy()]
+                conn.executemany(
+                    f"INSERT INTO {table} ({col_sql}) VALUES ({placeholders})",
+                    rows,
+                )
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")

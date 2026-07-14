@@ -46,6 +46,37 @@ streamlit run app.py
 
 The app opens at `http://localhost:8501`.
 
+## Persistent storage options
+
+By default, data is stored in local SQLite (`scheduler.db`).
+
+For persistence across website invocations (for example in hosted Streamlit),
+configure Streamlit Google Sheets connector and the app will automatically use
+Google Sheets as the durable backing store while keeping SQLite as runtime DB.
+
+Create `.streamlit/secrets.toml`:
+
+```toml
+[connections.gsheets]
+spreadsheet = "https://docs.google.com/spreadsheets/d/<YOUR_SHEET_ID>/edit#gid=0"
+```
+
+On startup, the app bootstraps storage:
+
+- If Google Sheets has data, it pulls into SQLite.
+- If Google Sheets is empty and local SQLite has data, it pushes SQLite data to Google Sheets.
+- On each write action (import, edits, progress updates), it pushes current SQLite tables back to Google Sheets.
+
+Worksheets created/used in the spreadsheet:
+
+- `projects`
+- `sites`
+- `task_templates`
+- `tasks`
+- `task_dependencies`
+- `task_formula_dependencies`
+- `daily_logs`
+
 ---
 
 ## Importing a schedule

@@ -13,6 +13,7 @@ from io import BytesIO, StringIO
 
 import db
 import loader
+import gsheets_persistence
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -24,6 +25,11 @@ st.set_page_config(
 
 # ─── DB init ─────────────────────────────────────────────────────────────────
 db.init_db()
+
+# Optional persistent backing store via Streamlit Google Sheets connector.
+if "storage_bootstrapped" not in st.session_state:
+    st.session_state.storage_bootstrapped = True
+    st.session_state.storage_status = gsheets_persistence.bootstrap_storage()
 
 # ─── Session state ────────────────────────────────────────────────────────────
 for key, default in [
@@ -207,12 +213,27 @@ def _import_google_sheet_into_db(
     return len(tasks), None
 
 
+def _flush_persistent_storage() -> None:
+    """Push local SQLite state to Google Sheets when connector is configured."""
+    if gsheets_persistence.is_enabled():
+        gsheets_persistence.push_from_sqlite()
+
+
 # ─── Sidebar — project management ────────────────────────────────────────────
 with st.sidebar:
     st.title("📅 Sunworks Scheduler")
     st.divider()
 
     st.subheader("Projects")
+    if st.session_state.get("storage_status") == "pulled":
+        st.caption("Storage: Google Sheets synced")
+    elif st.session_state.get("storage_status") == "pushed":
+        st.caption("Storage: Google Sheets initialized from local DB")
+    elif gsheets_persistence.is_enabled():
+        st.caption("Storage: Google Sheets enabled")
+    else:
+        st.caption("Storage: local SQLite only")
+
     projects = db.list_projects()
     project_names = [p["name"] for p in projects]
     project_ids = [p["id"] for p in projects]
@@ -258,6 +279,7 @@ with st.sidebar:
         if st.button("Create project"):
             if new_name.strip():
                 pid = db.create_project(new_name.strip(), new_desc.strip())
+                _flush_persistent_storage()
                 st.session_state.project_id = pid
                 st.session_state.site_id = None
                 st.session_state.tasks_df = pd.DataFrame()
@@ -275,6 +297,7 @@ with st.sidebar:
             if st.button("Create site"):
                 if site_name.strip():
                     sid = db.create_site(st.session_state.project_id, site_name.strip(), site_desc.strip())
+                    _flush_persistent_storage()
                     st.session_state.site_id = sid
                     st.session_state.tasks_df = _load_tasks(st.session_state.project_id, sid)
                     st.success(f"Ready for site '{site_name.strip()}'")
@@ -302,6 +325,7 @@ with st.sidebar:
                 anchor_input = st.date_input("Site anchor start", value=anchor_default, key="site_anchor_start")
                 if st.button("Recalculate planned dates"):
                     db.recompute_site_task_dates(st.session_state.site_id, str(anchor_input))
+                    _flush_persistent_storage()
                     st.session_state.tasks_df = _load_tasks(
                         st.session_state.project_id,
                         site_id=st.session_state.site_id,
@@ -375,6 +399,7 @@ with st.sidebar:
                             )
 
                         db.upsert_site_tasks(st.session_state.project_id, site_id, tasks)
+                        _flush_persistent_storage()
                         st.session_state.tasks_df = _load_tasks(st.session_state.project_id, site_id)
                         imported_count = len(tasks)
                     elif import_mode == "Relative formula schedule (Excel)":
@@ -398,6 +423,7 @@ with st.sidebar:
                             dependencies=parsed["dependencies"],
                         )
                         db.set_site_anchor_start(site_id, parsed["anchor_start_date"])
+                        _flush_persistent_storage()
                         st.session_state.tasks_df = _load_tasks(st.session_state.project_id, site_id)
                         imported_count = len(tasks)
                     else:
@@ -412,6 +438,7 @@ with st.sidebar:
                                 st.session_state.project_id,
                             )
                         db.upsert_tasks(st.session_state.project_id, tasks)
+                        _flush_persistent_storage()
                         st.session_state.site_id = None
                         st.session_state.tasks_df = _load_tasks(st.session_state.project_id)
                         imported_count = len(tasks)
@@ -429,6 +456,7 @@ with st.sidebar:
                         sheet_url.strip(),
                         import_site_name.strip(),
                     )
+                    _flush_persistent_storage()
 
                     st.session_state.site_id = imported_site_id
                     st.session_state.tasks_df = _load_tasks(
@@ -443,6 +471,7 @@ with st.sidebar:
                             import_mode,
                             import_site_name.strip() if import_mode == "Site quantity schedule" else None,
                         )
+                        _flush_persistent_storage()
 
                     st.success(f"Imported {imported_count} tasks from Google Sheet.")
                     st.rerun()
@@ -470,6 +499,7 @@ with st.sidebar:
                             sync_cfg.get("google_sheet_url") or "",
                             sync_cfg.get("google_import_site_name") or "",
                         )
+                        _flush_persistent_storage()
                         st.session_state.site_id = imported_site_id
                         st.session_state.tasks_df = _load_tasks(
                             st.session_state.project_id,
@@ -482,6 +512,7 @@ with st.sidebar:
 
                 if st.button("Clear saved source", key="clear_sync_source_btn"):
                     db.clear_project_google_sync(st.session_state.project_id)
+                    _flush_persistent_storage()
                     st.success("Cleared saved Google Sheet sync source.")
                     st.rerun()
 
@@ -491,6 +522,7 @@ with st.sidebar:
             st.warning("This will delete all tasks and logs for this project.")
             if st.button("Confirm delete", type="primary"):
                 db.delete_project(st.session_state.project_id)
+                _flush_persistent_storage()
                 st.session_state.project_id = None
                 st.session_state.site_id = None
                 st.session_state.tasks_df = None
@@ -681,6 +713,7 @@ with tab_update:
 
             if st.button("💾 Save progress", type="primary"):
                 db.update_task_progress(sel_task_id, float(new_pct), comment)
+                _flush_persistent_storage()
                 st.session_state.tasks_df = _load_tasks(
                     st.session_state.project_id,
                     site_id=st.session_state.site_id,
@@ -703,6 +736,7 @@ with tab_update:
                 if st.button("💾 Update dates"):
                     if new_finish >= new_start:
                         db.update_task_dates(sel_task_id, str(new_start), str(new_finish))
+                        _flush_persistent_storage()
                         st.session_state.tasks_df = _load_tasks(
                             st.session_state.project_id,
                             site_id=st.session_state.site_id,
