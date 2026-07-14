@@ -13,7 +13,7 @@ from io import BytesIO, StringIO
 
 import db
 import loader
-import gsheets_persistence
+import supabase_persistence
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -26,10 +26,10 @@ st.set_page_config(
 # ─── DB init ─────────────────────────────────────────────────────────────────
 db.init_db()
 
-# Optional persistent backing store via Streamlit Google Sheets connector.
+# Optional persistent backing store via Supabase.
 if "storage_bootstrapped" not in st.session_state:
     st.session_state.storage_bootstrapped = True
-    st.session_state.storage_status = gsheets_persistence.bootstrap_storage()
+    st.session_state.storage_status = supabase_persistence.bootstrap_storage()
 
 # ─── Session state ────────────────────────────────────────────────────────────
 for key, default in [
@@ -180,43 +180,10 @@ def _progress_donut(pct: float) -> go.Figure:
     return fig
 
 
-def _import_google_sheet_into_db(
-    project_id: int,
-    import_mode: str,
-    sheet_url: str,
-    site_name: str = "",
-) -> tuple[int, int | None]:
-    """Import tasks from Google Sheets URL into DB. Returns (task_count, site_id)."""
-    if not sheet_url.strip():
-        raise ValueError("Enter a Google Sheet URL.")
-
-    if import_mode == "Relative formula schedule (Excel)":
-        raise ValueError("Relative formula import requires Excel upload. Use the uploader for this mode.")
-
-    if import_mode == "Site quantity schedule":
-        if not site_name.strip():
-            raise ValueError("Site name is required for site quantity import.")
-
-        site_id = db.create_site(project_id, site_name.strip())
-        tasks = loader.parse_site_quantity_csv(
-            loader.read_google_sheet_csv(sheet_url.strip()),
-            project_id,
-        )
-        db.upsert_site_tasks(project_id, site_id, tasks)
-        return len(tasks), site_id
-
-    tasks = loader.parse_schedule_google_sheet(
-        sheet_url.strip(),
-        project_id,
-    )
-    db.upsert_tasks(project_id, tasks)
-    return len(tasks), None
-
-
 def _flush_persistent_storage() -> None:
-    """Push local SQLite state to Google Sheets when connector is configured."""
-    if gsheets_persistence.is_enabled():
-        gsheets_persistence.push_from_sqlite()
+    """Push local SQLite state to Supabase when configured."""
+    if supabase_persistence.is_enabled():
+        supabase_persistence.push_from_sqlite()
 
 
 # ─── Sidebar — project management ────────────────────────────────────────────
@@ -226,11 +193,13 @@ with st.sidebar:
 
     st.subheader("Projects")
     if st.session_state.get("storage_status") == "pulled":
-        st.caption("Storage: Google Sheets synced")
+        st.caption("Storage: Supabase synced")
     elif st.session_state.get("storage_status") == "pushed":
-        st.caption("Storage: Google Sheets initialized from local DB")
-    elif gsheets_persistence.is_enabled():
-        st.caption("Storage: Google Sheets enabled")
+        st.caption("Storage: Supabase initialized from local DB")
+    elif st.session_state.get("storage_status") == "unavailable":
+        st.caption("Storage: Supabase configured but sync table unavailable")
+    elif supabase_persistence.is_enabled():
+        st.caption("Storage: Supabase enabled")
     else:
         st.caption("Storage: local SQLite only")
 
@@ -358,19 +327,6 @@ with st.sidebar:
                 key="schedule_upload",
             )
 
-            sheet_url = st.text_input(
-                "Google Sheet URL (public share link)",
-                key="google_sheet_url",
-                placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=0",
-            )
-
-            import_from_sheet = st.button("Import from Google Sheet URL")
-            save_sync_source = st.checkbox(
-                "Save this URL for one-click auto-sync",
-                value=True,
-                key="save_google_sync_source",
-            )
-
             if uploaded is not None:
                 try:
                     raw = uploaded.read()
@@ -447,74 +403,6 @@ with st.sidebar:
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Import failed: {exc}")
-
-            if import_from_sheet:
-                try:
-                    imported_count, imported_site_id = _import_google_sheet_into_db(
-                        st.session_state.project_id,
-                        import_mode,
-                        sheet_url.strip(),
-                        import_site_name.strip(),
-                    )
-                    _flush_persistent_storage()
-
-                    st.session_state.site_id = imported_site_id
-                    st.session_state.tasks_df = _load_tasks(
-                        st.session_state.project_id,
-                        site_id=imported_site_id,
-                    )
-
-                    if save_sync_source:
-                        db.set_project_google_sync(
-                            st.session_state.project_id,
-                            sheet_url.strip(),
-                            import_mode,
-                            import_site_name.strip() if import_mode == "Site quantity schedule" else None,
-                        )
-                        _flush_persistent_storage()
-
-                    st.success(f"Imported {imported_count} tasks from Google Sheet.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Google Sheet import failed: {exc}")
-
-    with st.expander("🔄 Auto-sync"):
-        if st.session_state.project_id is None:
-            st.warning("Create or select a project first.")
-        else:
-            sync_cfg = db.get_project_google_sync(st.session_state.project_id)
-            if not sync_cfg:
-                st.info("No saved Google Sheet source for this project yet.")
-            else:
-                st.caption(f"Mode: {sync_cfg.get('google_import_mode')}")
-                if sync_cfg.get("google_import_site_name"):
-                    st.caption(f"Site: {sync_cfg.get('google_import_site_name')}")
-                st.caption(sync_cfg.get("google_sheet_url"))
-
-                if st.button("Sync now", key="sync_now_btn"):
-                    try:
-                        imported_count, imported_site_id = _import_google_sheet_into_db(
-                            st.session_state.project_id,
-                            sync_cfg.get("google_import_mode") or "MS Project schedule",
-                            sync_cfg.get("google_sheet_url") or "",
-                            sync_cfg.get("google_import_site_name") or "",
-                        )
-                        _flush_persistent_storage()
-                        st.session_state.site_id = imported_site_id
-                        st.session_state.tasks_df = _load_tasks(
-                            st.session_state.project_id,
-                            site_id=imported_site_id,
-                        )
-                        st.success(f"Synced {imported_count} tasks from saved Google Sheet source.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Auto-sync failed: {exc}")
-
-                if st.button("Clear saved source", key="clear_sync_source_btn"):
-                    db.clear_project_google_sync(st.session_state.project_id)
-                    _flush_persistent_storage()
-                    st.success("Cleared saved Google Sheet sync source.")
-                    st.rerun()
 
     # ── Delete project ──
     if st.session_state.project_id:

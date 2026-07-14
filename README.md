@@ -19,7 +19,6 @@ This application is designed to track and visualize solar project schedules with
 | Multi-site SQL model | Each project can have many sites, each site reuses shared task templates with site-specific quantities |
 | Relative planning engine | Planned task dates can be derived from formula dependencies and stored as offsets from site anchor start |
 | CSV / Excel import | Supports both MS-Project style schedules and Dakansy-style ACTIVITY/QUANTITY schedules |
-| Google Sheets import | Import directly from a shared Google Sheet URL (CSV export) |
 | Interactive Gantt | Colour-coded by WBS phase, progress overlay, today marker, date window filter |
 | Today's tasks | Daily view of every leaf task active on a selected date |
 | Progress updates | Slider update + date adjustment; every change logged with timestamp |
@@ -51,31 +50,32 @@ The app opens at `http://localhost:8501`.
 By default, data is stored in local SQLite (`scheduler.db`).
 
 For persistence across website invocations (for example in hosted Streamlit),
-configure Streamlit Google Sheets connector and the app will automatically use
-Google Sheets as the durable backing store while keeping SQLite as runtime DB.
+configure Supabase credentials and the app will automatically use Supabase
+as the durable backing store while keeping SQLite as runtime DB.
 
 Create `.streamlit/secrets.toml`:
 
 ```toml
-[connections.gsheets]
-spreadsheet = "https://docs.google.com/spreadsheets/d/<YOUR_SHEET_ID>/edit#gid=0"
+[supabase]
+url = "https://<YOUR_PROJECT>.supabase.co/rest/v1"
+key = "<YOUR_SUPABASE_KEY>"
 ```
 
 On startup, the app bootstraps storage:
 
-- If Google Sheets has data, it pulls into SQLite.
-- If Google Sheets is empty and local SQLite has data, it pushes SQLite data to Google Sheets.
-- On each write action (import, edits, progress updates), it pushes current SQLite tables back to Google Sheets.
+- If Supabase has data, it pulls into SQLite.
+- If Supabase is empty and local SQLite has data, it pushes SQLite data to Supabase.
+- On each write action (import, edits, progress updates), it pushes current SQLite tables back to Supabase.
 
-Worksheets created/used in the spreadsheet:
+Create this table in Supabase SQL editor:
 
-- `projects`
-- `sites`
-- `task_templates`
-- `tasks`
-- `task_dependencies`
-- `task_formula_dependencies`
-- `daily_logs`
+```sql
+create table if not exists scheduler_state (
+  id integer primary key,
+  payload jsonb not null,
+  updated_at timestamptz default now()
+);
+```
 
 ---
 
@@ -85,9 +85,7 @@ Worksheets created/used in the spreadsheet:
 2. (Recommended) create a site in **🏗️ Sites**.
 3. Click **📥 Import schedule**, pick the import mode, then upload your CSV or Excel file.
 
-You can also paste a public Google Sheet link and click **Import from Google Sheet URL**.
 The imported schedule is saved to `scheduler.db` and remains available across app restarts.
-If you keep **Save this URL for one-click auto-sync** enabled, the project stores the source and you can use **🔄 Auto-sync → Sync now** anytime.
 
 ### Site quantity schedule mode (new)
 

@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 .env
+supabase credentials
 *.egg-info/
 dist/
 build/
