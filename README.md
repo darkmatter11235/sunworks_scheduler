@@ -19,6 +19,7 @@ This application is designed to track and visualize solar project schedules with
 | Multi-site SQL model | Each project can have many sites, each site reuses shared task templates with site-specific quantities |
 | Relative planning engine | Planned task dates can be derived from formula dependencies and stored as offsets from site anchor start |
 | CSV / Excel import | Supports both MS-Project style schedules and Dakansy-style ACTIVITY/QUANTITY schedules |
+| Google Sheets import | Import directly from a shared Google Sheet URL (CSV export) |
 | Interactive Gantt | Colour-coded by WBS phase, progress overlay, today marker, date window filter |
 | Today's tasks | Daily view of every leaf task active on a selected date |
 | Progress updates | Slider update + date adjustment; every change logged with timestamp |
@@ -52,6 +53,10 @@ The app opens at `http://localhost:8501`.
 1. Click **➕ New project** in the sidebar and give it a name.
 2. (Recommended) create a site in **🏗️ Sites**.
 3. Click **📥 Import schedule**, pick the import mode, then upload your CSV or Excel file.
+
+You can also paste a public Google Sheet link and click **Import from Google Sheet URL**.
+The imported schedule is saved to `scheduler.db` and remains available across app restarts.
+If you keep **Save this URL for one-click auto-sync** enabled, the project stores the source and you can use **🔄 Auto-sync → Sync now** anytime.
 
 ### Site quantity schedule mode (new)
 

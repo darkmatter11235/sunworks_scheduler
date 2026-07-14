@@ -125,6 +125,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
 
         _ensure_task_columns(conn)
         _ensure_site_columns(conn)
+        _ensure_project_columns(conn)
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -161,6 +162,16 @@ def _ensure_site_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sites ADD COLUMN anchor_start_date DATE")
 
 
+def _ensure_project_columns(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "projects")
+    if "google_sheet_url" not in cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN google_sheet_url TEXT")
+    if "google_import_mode" not in cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN google_import_mode TEXT")
+    if "google_import_site_name" not in cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN google_import_site_name TEXT")
+
+
 # ─── Projects ────────────────────────────────────────────────────────────────
 
 def create_project(name: str, description: str = "") -> int:
@@ -191,6 +202,52 @@ def get_project(project_id: int) -> Optional[dict]:
 def delete_project(project_id: int) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+
+def set_project_google_sync(
+    project_id: int,
+    sheet_url: str,
+    import_mode: str,
+    site_name: Optional[str] = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE projects
+               SET google_sheet_url = ?,
+                   google_import_mode = ?,
+                   google_import_site_name = ?
+               WHERE id = ?""",
+            (sheet_url.strip(), import_mode.strip(), (site_name or "").strip() or None, project_id),
+        )
+
+
+def get_project_google_sync(project_id: int) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT google_sheet_url, google_import_mode, google_import_site_name
+               FROM projects
+               WHERE id = ?""",
+            (project_id,),
+        ).fetchone()
+        if not row:
+            return None
+
+        cfg = dict(row)
+        if not cfg.get("google_sheet_url"):
+            return None
+        return cfg
+
+
+def clear_project_google_sync(project_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE projects
+               SET google_sheet_url = NULL,
+                   google_import_mode = NULL,
+                   google_import_site_name = NULL
+               WHERE id = ?""",
+            (project_id,),
+        )
 
 
 # ─── Sites ───────────────────────────────────────────────────────────────────

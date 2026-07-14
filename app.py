@@ -174,6 +174,39 @@ def _progress_donut(pct: float) -> go.Figure:
     return fig
 
 
+def _import_google_sheet_into_db(
+    project_id: int,
+    import_mode: str,
+    sheet_url: str,
+    site_name: str = "",
+) -> tuple[int, int | None]:
+    """Import tasks from Google Sheets URL into DB. Returns (task_count, site_id)."""
+    if not sheet_url.strip():
+        raise ValueError("Enter a Google Sheet URL.")
+
+    if import_mode == "Relative formula schedule (Excel)":
+        raise ValueError("Relative formula import requires Excel upload. Use the uploader for this mode.")
+
+    if import_mode == "Site quantity schedule":
+        if not site_name.strip():
+            raise ValueError("Site name is required for site quantity import.")
+
+        site_id = db.create_site(project_id, site_name.strip())
+        tasks = loader.parse_site_quantity_csv(
+            loader.read_google_sheet_csv(sheet_url.strip()),
+            project_id,
+        )
+        db.upsert_site_tasks(project_id, site_id, tasks)
+        return len(tasks), site_id
+
+    tasks = loader.parse_schedule_google_sheet(
+        sheet_url.strip(),
+        project_id,
+    )
+    db.upsert_tasks(project_id, tasks)
+    return len(tasks), None
+
+
 # ─── Sidebar — project management ────────────────────────────────────────────
 with st.sidebar:
     st.title("📅 Sunworks Scheduler")
@@ -300,9 +333,24 @@ with st.sidebar:
                 type=["csv", "xlsx", "xls"],
                 key="schedule_upload",
             )
+
+            sheet_url = st.text_input(
+                "Google Sheet URL (public share link)",
+                key="google_sheet_url",
+                placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=0",
+            )
+
+            import_from_sheet = st.button("Import from Google Sheet URL")
+            save_sync_source = st.checkbox(
+                "Save this URL for one-click auto-sync",
+                value=True,
+                key="save_google_sync_source",
+            )
+
             if uploaded is not None:
                 try:
                     raw = uploaded.read()
+                    imported_count = 0
                     if import_mode == "Site quantity schedule":
                         if not import_site_name.strip():
                             raise ValueError("Site name is required for site quantity import.")
@@ -328,6 +376,7 @@ with st.sidebar:
 
                         db.upsert_site_tasks(st.session_state.project_id, site_id, tasks)
                         st.session_state.tasks_df = _load_tasks(st.session_state.project_id, site_id)
+                        imported_count = len(tasks)
                     elif import_mode == "Relative formula schedule (Excel)":
                         if not import_site_name.strip():
                             raise ValueError("Site name is required for relative formula import.")
@@ -341,14 +390,16 @@ with st.sidebar:
                             BytesIO(raw),
                             st.session_state.project_id,
                         )
+                        tasks = parsed["tasks"]
                         db.upsert_site_tasks(
                             st.session_state.project_id,
                             site_id,
-                            parsed["tasks"],
+                            tasks,
                             dependencies=parsed["dependencies"],
                         )
                         db.set_site_anchor_start(site_id, parsed["anchor_start_date"])
                         st.session_state.tasks_df = _load_tasks(st.session_state.project_id, site_id)
+                        imported_count = len(tasks)
                     else:
                         if uploaded.name.endswith(".csv"):
                             tasks = loader.parse_schedule_csv(
@@ -363,11 +414,76 @@ with st.sidebar:
                         db.upsert_tasks(st.session_state.project_id, tasks)
                         st.session_state.site_id = None
                         st.session_state.tasks_df = _load_tasks(st.session_state.project_id)
+                        imported_count = len(tasks)
 
-                    st.success(f"Imported {len(tasks)} tasks.")
+                    st.success(f"Imported {imported_count} tasks.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Import failed: {exc}")
+
+            if import_from_sheet:
+                try:
+                    imported_count, imported_site_id = _import_google_sheet_into_db(
+                        st.session_state.project_id,
+                        import_mode,
+                        sheet_url.strip(),
+                        import_site_name.strip(),
+                    )
+
+                    st.session_state.site_id = imported_site_id
+                    st.session_state.tasks_df = _load_tasks(
+                        st.session_state.project_id,
+                        site_id=imported_site_id,
+                    )
+
+                    if save_sync_source:
+                        db.set_project_google_sync(
+                            st.session_state.project_id,
+                            sheet_url.strip(),
+                            import_mode,
+                            import_site_name.strip() if import_mode == "Site quantity schedule" else None,
+                        )
+
+                    st.success(f"Imported {imported_count} tasks from Google Sheet.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Google Sheet import failed: {exc}")
+
+    with st.expander("🔄 Auto-sync"):
+        if st.session_state.project_id is None:
+            st.warning("Create or select a project first.")
+        else:
+            sync_cfg = db.get_project_google_sync(st.session_state.project_id)
+            if not sync_cfg:
+                st.info("No saved Google Sheet source for this project yet.")
+            else:
+                st.caption(f"Mode: {sync_cfg.get('google_import_mode')}")
+                if sync_cfg.get("google_import_site_name"):
+                    st.caption(f"Site: {sync_cfg.get('google_import_site_name')}")
+                st.caption(sync_cfg.get("google_sheet_url"))
+
+                if st.button("Sync now", key="sync_now_btn"):
+                    try:
+                        imported_count, imported_site_id = _import_google_sheet_into_db(
+                            st.session_state.project_id,
+                            sync_cfg.get("google_import_mode") or "MS Project schedule",
+                            sync_cfg.get("google_sheet_url") or "",
+                            sync_cfg.get("google_import_site_name") or "",
+                        )
+                        st.session_state.site_id = imported_site_id
+                        st.session_state.tasks_df = _load_tasks(
+                            st.session_state.project_id,
+                            site_id=imported_site_id,
+                        )
+                        st.success(f"Synced {imported_count} tasks from saved Google Sheet source.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Auto-sync failed: {exc}")
+
+                if st.button("Clear saved source", key="clear_sync_source_btn"):
+                    db.clear_project_google_sync(st.session_state.project_id)
+                    st.success("Cleared saved Google Sheet sync source.")
+                    st.rerun()
 
     # ── Delete project ──
     if st.session_state.project_id:

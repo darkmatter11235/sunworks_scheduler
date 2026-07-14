@@ -14,6 +14,8 @@ from io import StringIO, BytesIO
 from typing import Union
 from pathlib import Path
 from datetime import date, datetime, timedelta
+from urllib.parse import urlparse, parse_qs
+from urllib.request import urlopen
 from openpyxl import load_workbook
 
 # ─── Date parsing ─────────────────────────────────────────────────────────────
@@ -23,6 +25,40 @@ _DATE_FMTS = [
     "%m/%d/%Y",
     "%Y-%m-%d",
 ]
+
+
+def google_sheet_export_csv_url(sheet_url: str) -> str:
+    """Convert a Google Sheet URL into a direct CSV export URL."""
+    parsed = urlparse(sheet_url.strip())
+    if "docs.google.com" not in parsed.netloc or "/spreadsheets/" not in parsed.path:
+        raise ValueError("Invalid Google Sheets URL.")
+
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", parsed.path)
+    if not m:
+        raise ValueError("Could not find Google Sheet ID in URL.")
+
+    sheet_id = m.group(1)
+    query = parse_qs(parsed.query)
+    gid = query.get("gid", ["0"])[0]
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+
+
+def read_google_sheet_csv(sheet_url: str) -> StringIO:
+    """Fetch a public Google Sheet tab as CSV and return a text buffer."""
+    export_url = google_sheet_export_csv_url(sheet_url)
+    try:
+        with urlopen(export_url, timeout=20) as resp:
+            content = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(
+            "Failed to fetch Google Sheet as CSV. Ensure sharing is enabled and URL is correct."
+        ) from exc
+    return StringIO(content)
+
+
+def parse_schedule_google_sheet(sheet_url: str, project_id: int) -> list[dict]:
+    """Parse a Google Sheet into schedule tasks using the CSV parser path."""
+    return parse_schedule_csv(read_google_sheet_csv(sheet_url), project_id)
 
 
 def _parse_date(raw) -> str | None:
