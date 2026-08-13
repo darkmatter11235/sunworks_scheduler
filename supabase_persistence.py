@@ -227,9 +227,12 @@ def pull_into_sqlite() -> str:
         return PULL_STATUS_UNAVAILABLE
 
     if resp.status_code != 200:
-        if _is_missing_table_response(resp) and _ensure_remote_table_exists():
-            _set_last_sync_error("")
-            return PULL_STATUS_EMPTY
+        if _is_missing_table_response(resp):
+            if _ensure_remote_table_exists():
+                _set_last_sync_error("")
+                return PULL_STATUS_EMPTY
+            # Keep the specific provisioning error set by _ensure_remote_table_exists().
+            return PULL_STATUS_UNAVAILABLE
         _set_last_sync_error(f"Supabase read failed ({resp.status_code}): {resp.text[:240]}")
         return PULL_STATUS_UNAVAILABLE
 
