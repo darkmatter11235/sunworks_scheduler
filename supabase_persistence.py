@@ -78,6 +78,14 @@ def _get_credentials() -> tuple[str, str]:
     return url.rstrip("/"), key
 
 
+def _get_db_url() -> str:
+    supa_cfg = st.secrets.get("supabase", {}) if hasattr(st, "secrets") else {}
+    db_url = str(supa_cfg.get("db_url", "") or "").strip()
+    if not db_url:
+        db_url = os.getenv("SUPABASE_DB_URL", "").strip()
+    return db_url
+
+
 def _headers(key: str) -> dict[str, str]:
     return {
         "apikey": key,
@@ -100,6 +108,47 @@ def _request_with_retries(method: str, endpoint: str, **kwargs) -> Optional[requ
         _set_last_sync_error(f"Network error: {last_error}")
         return None
     return None
+
+
+def _is_missing_table_response(resp: requests.Response) -> bool:
+    if resp.status_code != 404:
+        return False
+    body = resp.text or ""
+    return "PGRST205" in body and TABLE_NAME in body
+
+
+def _ensure_remote_table_exists() -> bool:
+    db_url = _get_db_url()
+    if not db_url:
+        _set_last_sync_error(
+            "Supabase table missing. Set supabase.db_url (or SUPABASE_DB_URL) to auto-create scheduler_state."
+        )
+        return False
+
+    try:
+        import psycopg
+    except Exception:
+        _set_last_sync_error(
+            "psycopg is required for auto-creating scheduler_state table. Install dependencies and redeploy."
+        )
+        return False
+
+    ddl = """
+    create table if not exists public.scheduler_state (
+      id integer primary key,
+      payload jsonb not null,
+      updated_at timestamptz default now()
+    );
+    """
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(ddl)
+            conn.commit()
+        return True
+    except Exception as exc:
+        _set_last_sync_error(f"Failed to auto-create scheduler_state table: {exc}")
+        return False
 
 
 def is_enabled() -> bool:
@@ -149,6 +198,9 @@ def pull_into_sqlite() -> str:
         return PULL_STATUS_UNAVAILABLE
 
     if resp.status_code != 200:
+        if _is_missing_table_response(resp) and _ensure_remote_table_exists():
+            _set_last_sync_error("")
+            return PULL_STATUS_EMPTY
         _set_last_sync_error(f"Supabase read failed ({resp.status_code}): {resp.text[:240]}")
         return PULL_STATUS_UNAVAILABLE
 
@@ -198,6 +250,18 @@ def push_from_sqlite() -> bool:
     if resp.status_code in (200, 201, 204):
         _set_last_sync_error("")
         return True
+
+    if _is_missing_table_response(resp) and _ensure_remote_table_exists():
+        retry_resp = _request_with_retries(
+            "POST",
+            endpoint,
+            headers=headers,
+            data=json.dumps(body),
+            timeout=30,
+        )
+        if retry_resp is not None and retry_resp.status_code in (200, 201, 204):
+            _set_last_sync_error("")
+            return True
 
     _set_last_sync_error(f"Supabase write failed ({resp.status_code}): {resp.text[:240]}")
     return False

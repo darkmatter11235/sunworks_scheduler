@@ -59,7 +59,11 @@ Create `.streamlit/secrets.toml`:
 [supabase]
 url = "https://<YOUR_PROJECT>.supabase.co/rest/v1"
 key = "<YOUR_SUPABASE_KEY>"
+db_url = "postgresql://postgres:<PASSWORD>@<HOST>:5432/postgres"
 ```
+
+`db_url` is optional but recommended. When provided, the app can auto-create
+the `scheduler_state` table if it is missing.
 
 For local development, you can copy `.streamlit/secrets.example.toml` to
 `.streamlit/secrets.toml` and fill in real values.
@@ -75,6 +79,7 @@ Set the same values in app settings instead:
 [supabase]
 url = "https://<YOUR_PROJECT>.supabase.co/rest/v1"
 key = "<YOUR_SUPABASE_SECRET_KEY>"
+db_url = "postgresql://postgres:<PASSWORD>@<HOST>:5432/postgres"
 ```
 
 4. Save secrets and reboot the app.
@@ -86,7 +91,7 @@ On startup, the app bootstraps storage:
 - If Supabase is temporarily unreachable, the app keeps the current local SQLite state instead of treating the remote store as empty.
 - On each write action (import, edits, progress updates), it pushes current SQLite tables back to Supabase.
 
-Create this table in Supabase SQL editor:
+If `db_url` is not configured, create this table manually in Supabase SQL editor:
 
 ```sql
 create table if not exists scheduler_state (
@@ -99,6 +104,7 @@ create table if not exists scheduler_state (
 If the app shows **Storage: Supabase configured but unavailable**, open the
 sidebar **Storage diagnostics** panel. A common issue is a missing
 `scheduler_state` table, which appears as `PGRST205` in the error details.
+If `db_url` is configured, the app will try to create this table automatically.
 
 ---
 

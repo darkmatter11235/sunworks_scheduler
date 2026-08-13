@@ -8,3 +8,4 @@ plotly>=5.17.0
 
 # Backend sync
 requests>=2.31.0
+psycopg[binary]>=3.2.1
