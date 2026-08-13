@@ -197,7 +197,7 @@ with st.sidebar:
     elif st.session_state.get("storage_status") == "pushed":
         st.caption("Storage: Supabase initialized from local DB")
     elif st.session_state.get("storage_status") == "unavailable":
-        st.caption("Storage: Supabase configured but sync table unavailable")
+        st.caption("Storage: Supabase unavailable, using current local DB state")
     elif supabase_persistence.is_enabled():
         st.caption("Storage: Supabase enabled")
     else:

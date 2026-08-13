@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
+from time import sleep
 
 import pandas as pd
 import requests
@@ -20,6 +21,13 @@ import db
 
 TABLE_NAME = "scheduler_state"
 ROW_ID = 1
+REQUEST_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 0.5
+
+PULL_STATUS_DISABLED = "disabled"
+PULL_STATUS_PULLED = "pulled"
+PULL_STATUS_EMPTY = "empty"
+PULL_STATUS_UNAVAILABLE = "unavailable"
 
 
 def _read_credentials_from_local_file() -> tuple[str, str]:
@@ -67,6 +75,21 @@ def _headers(key: str) -> dict[str, str]:
     }
 
 
+def _request_with_retries(method: str, endpoint: str, **kwargs) -> Optional[requests.Response]:
+    last_error: Optional[Exception] = None
+    for attempt in range(REQUEST_RETRIES):
+        try:
+            return requests.request(method, endpoint, **kwargs)
+        except Exception as exc:
+            last_error = exc
+            if attempt < REQUEST_RETRIES - 1:
+                sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+
+    if last_error:
+        return None
+    return None
+
+
 def is_enabled() -> bool:
     url, key = _get_credentials()
     return bool(url and key)
@@ -90,11 +113,11 @@ def _payload_to_state(payload: dict) -> dict[str, pd.DataFrame]:
     return out
 
 
-def pull_into_sqlite() -> bool:
+def pull_into_sqlite() -> str:
     """Load persisted state from Supabase into SQLite."""
     url, key = _get_credentials()
     if not url or not key:
-        return False
+        return PULL_STATUS_DISABLED
 
     endpoint = f"{url}/{TABLE_NAME}"
     params = {
@@ -102,28 +125,33 @@ def pull_into_sqlite() -> bool:
         "select": "payload",
     }
 
-    try:
-        resp = requests.get(endpoint, headers=_headers(key), params=params, timeout=20)
-    except Exception:
-        return False
+    resp = _request_with_retries(
+        "GET",
+        endpoint,
+        headers=_headers(key),
+        params=params,
+        timeout=20,
+    )
+    if resp is None:
+        return PULL_STATUS_UNAVAILABLE
 
     if resp.status_code != 200:
-        return False
+        return PULL_STATUS_UNAVAILABLE
 
     try:
         rows = resp.json()
     except ValueError:
-        return False
+        return PULL_STATUS_UNAVAILABLE
 
     if not rows:
-        return False
+        return PULL_STATUS_EMPTY
 
     payload = rows[0].get("payload")
     if not isinstance(payload, dict):
-        return False
+        return PULL_STATUS_UNAVAILABLE
 
     db.import_all_tables(_payload_to_state(payload))
-    return True
+    return PULL_STATUS_PULLED
 
 
 def push_from_sqlite() -> bool:
@@ -137,9 +165,14 @@ def push_from_sqlite() -> bool:
     headers = _headers(key)
     headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
 
-    try:
-        resp = requests.post(endpoint, headers=headers, data=json.dumps(body), timeout=30)
-    except Exception:
+    resp = _request_with_retries(
+        "POST",
+        endpoint,
+        headers=headers,
+        data=json.dumps(body),
+        timeout=30,
+    )
+    if resp is None:
         return False
 
     # 201/200 for insert/update; 204 may appear depending on proxy behavior.
@@ -154,15 +187,17 @@ def bootstrap_storage() -> str:
       - "disabled": Supabase credentials not configured
       - "pulled": data loaded from Supabase into SQLite
       - "pushed": local SQLite pushed to Supabase
-      - "unavailable": Supabase configured but sync table/write not available
+            - "unavailable": Supabase configured but the remote store could not be read or written
       - "empty": both stores had no data
     """
     if not is_enabled():
         return "disabled"
 
-    imported = pull_into_sqlite()
-    if imported:
+    pull_status = pull_into_sqlite()
+    if pull_status == PULL_STATUS_PULLED:
         return "pulled"
+    if pull_status == PULL_STATUS_UNAVAILABLE:
+        return "unavailable"
 
     if db.has_any_data():
         pushed = push_from_sqlite()

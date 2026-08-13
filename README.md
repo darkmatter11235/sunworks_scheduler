@@ -65,6 +65,7 @@ On startup, the app bootstraps storage:
 
 - If Supabase has data, it pulls into SQLite.
 - If Supabase is empty and local SQLite has data, it pushes SQLite data to Supabase.
+- If Supabase is temporarily unreachable, the app keeps the current local SQLite state instead of treating the remote store as empty.
 - On each write action (import, edits, progress updates), it pushes current SQLite tables back to Supabase.
 
 Create this table in Supabase SQL editor:
