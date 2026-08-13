@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from typing import Optional
 from time import sleep
 
@@ -80,10 +81,38 @@ def _get_credentials() -> tuple[str, str]:
 
 def _get_db_url() -> str:
     supa_cfg = st.secrets.get("supabase", {}) if hasattr(st, "secrets") else {}
-    db_url = str(supa_cfg.get("db_url", "") or "").strip()
+
+    # Accept common key names users add in Streamlit secrets.
+    db_url = str(
+        supa_cfg.get("db_url", "")
+        or supa_cfg.get("database_url", "")
+        or supa_cfg.get("direct_url", "")
+        or ""
+    ).strip()
+
+    # Also allow top-level keys in secrets.toml.
+    if not db_url and hasattr(st, "secrets"):
+        db_url = str(
+            st.secrets.get("SUPABASE_DB_URL", "")
+            or st.secrets.get("DATABASE_URL", "")
+            or ""
+        ).strip()
+
     if not db_url:
-        db_url = os.getenv("SUPABASE_DB_URL", "").strip()
-    return db_url
+        db_url = (
+            os.getenv("SUPABASE_DB_URL", "").strip()
+            or os.getenv("DATABASE_URL", "").strip()
+        )
+
+    if not db_url:
+        return ""
+
+    # Supabase Postgres typically requires TLS; enforce sslmode=require if absent.
+    parsed = urlparse(db_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if "sslmode" not in query:
+        query["sslmode"] = "require"
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 def _headers(key: str) -> dict[str, str]:
@@ -141,7 +170,7 @@ def _ensure_remote_table_exists() -> bool:
     );
     """
     try:
-        with psycopg.connect(db_url) as conn:
+        with psycopg.connect(db_url, connect_timeout=10) as conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
             conn.commit()
