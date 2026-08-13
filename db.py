@@ -6,7 +6,7 @@ import sqlite3
 import json
 import pandas as pd
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from contextlib import contextmanager
 from typing import Optional
 
@@ -136,11 +136,118 @@ def init_db(db_path: Path = DB_PATH) -> None:
 
         _ensure_task_columns(conn)
         _ensure_site_columns(conn)
+        _normalize_existing_date_columns(conn)
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {str(r[1]) for r in rows}
+
+
+def _table_column_types(conn: sqlite3.Connection, table_name: str) -> dict[str, str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(r[1]): str(r[2] or "").upper() for r in rows}
+
+
+def _table_columns_by_type(conn: sqlite3.Connection, table_name: str, type_name: str) -> set[str]:
+    type_map = _table_column_types(conn, table_name)
+    return {col for col, col_type in type_map.items() if col_type == type_name}
+
+
+def _normalize_date_value(value):
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text or text.lower() in {"nat", "none", "null", "nan"}:
+        return None
+
+    # Common case from JSON ISO serialization: YYYY-MM-DDTHH:MM:SS[.ffffff][Z]
+    iso_text = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(iso_text).date().isoformat()
+    except ValueError:
+        pass
+
+    # Fallback: keep the date part when string begins with YYYY-MM-DD.
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+
+    return text
+
+
+def _normalize_timestamp_value(value):
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    if isinstance(value, date):
+        return f"{value.isoformat()} 00:00:00"
+
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text or text.lower() in {"nat", "none", "null", "nan"}:
+        return None
+
+    iso_text = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(iso_text)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+
+    if len(text) >= 19 and text[4] == "-" and text[7] == "-":
+        return text[:19].replace("T", " ")
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return f"{text[:10]} 00:00:00"
+
+    return text
+
+
+def _normalize_existing_date_columns(conn: sqlite3.Connection) -> None:
+    """Cleanup malformed DATE/TIMESTAMP values left from older Supabase restores."""
+    for table in TABLE_SYNC_ORDER:
+        date_cols = _table_columns_by_type(conn, table, "DATE")
+        ts_cols = _table_columns_by_type(conn, table, "TIMESTAMP")
+
+        for col in date_cols:
+            conn.execute(
+                f"UPDATE {table} SET {col} = substr({col}, 1, 10) WHERE {col} LIKE '%T%'"
+            )
+            conn.execute(
+                f"UPDATE {table} SET {col} = NULL WHERE lower(trim({col})) IN ('nat', 'none', 'null', 'nan', '')"
+            )
+
+        for col in ts_cols:
+            conn.execute(
+                f"UPDATE {table} SET {col} = replace(substr({col}, 1, 19), 'T', ' ') WHERE {col} LIKE '%T%'"
+            )
+            conn.execute(
+                f"UPDATE {table} SET {col} = NULL WHERE lower(trim({col})) IN ('nat', 'none', 'null', 'nan', '')"
+            )
 
 
 def _ensure_task_columns(conn: sqlite3.Connection) -> None:
@@ -591,6 +698,14 @@ def _table_columns_for_sync(conn: sqlite3.Connection, table_name: str) -> list[s
     return [str(r[1]) for r in rows]
 
 
+def _table_date_columns_for_sync(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return _table_columns_by_type(conn, table_name, "DATE")
+
+
+def _table_timestamp_columns_for_sync(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return _table_columns_by_type(conn, table_name, "TIMESTAMP")
+
+
 def import_all_tables(data: dict[str, pd.DataFrame]) -> None:
     """Replace local SQLite data using provided table DataFrames."""
     with get_conn() as conn:
@@ -611,6 +726,13 @@ def import_all_tables(data: dict[str, pd.DataFrame]) -> None:
                     continue
 
                 insert_df = df[use_cols].copy()
+                date_cols = _table_date_columns_for_sync(conn, table)
+                ts_cols = _table_timestamp_columns_for_sync(conn, table)
+                for col in use_cols:
+                    if col in date_cols:
+                        insert_df[col] = insert_df[col].map(_normalize_date_value)
+                    elif col in ts_cols:
+                        insert_df[col] = insert_df[col].map(_normalize_timestamp_value)
                 insert_df = insert_df.where(pd.notna(insert_df), None)
                 placeholders = ",".join(["?" for _ in use_cols])
                 col_sql = ",".join(use_cols)
