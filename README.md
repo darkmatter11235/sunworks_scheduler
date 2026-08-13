@@ -13,17 +13,17 @@ This application is designed to track and visualize solar project schedules with
 
 ## Features
 
-| Feature | Detail |
-|---|---|
-| Multi-project support | Create and switch between independent projects |
-| Multi-site SQL model | Each project can have many sites, each site reuses shared task templates with site-specific quantities |
+| Feature                  | Detail                                                                                                   |
+| ------------------------ | -------------------------------------------------------------------------------------------------------- |
+| Multi-project support    | Create and switch between independent projects                                                           |
+| Multi-site SQL model     | Each project can have many sites, each site reuses shared task templates with site-specific quantities   |
 | Relative planning engine | Planned task dates can be derived from formula dependencies and stored as offsets from site anchor start |
-| CSV / Excel import | Supports both MS-Project style schedules and Dakansy-style ACTIVITY/QUANTITY schedules |
-| Interactive Gantt | Colour-coded by WBS phase, progress overlay, today marker, date window filter |
-| Today's tasks | Daily view of every leaf task active on a selected date |
-| Progress updates | Slider update + date adjustment; every change logged with timestamp |
-| Activity log | Full audit trail; filterable by date; downloadable as CSV |
-| SQLite DB | Zero-configuration, file-based, WAL mode for safe concurrent writes |
+| CSV / Excel import       | Supports both MS-Project style schedules and Dakansy-style ACTIVITY/QUANTITY schedules                   |
+| Interactive Gantt        | Colour-coded by WBS phase, progress overlay, today marker, date window filter                            |
+| Today's tasks            | Daily view of every leaf task active on a selected date                                                  |
+| Progress updates         | Slider update + date adjustment; every change logged with timestamp                                      |
+| Activity log             | Full audit trail; filterable by date; downloadable as CSV                                                |
+| SQLite DB                | Zero-configuration, file-based, WAL mode for safe concurrent writes                                      |
 
 ---
 
