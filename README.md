@@ -61,6 +61,24 @@ url = "https://<YOUR_PROJECT>.supabase.co/rest/v1"
 key = "<YOUR_SUPABASE_KEY>"
 ```
 
+For local development, you can copy `.streamlit/secrets.example.toml` to
+`.streamlit/secrets.toml` and fill in real values.
+
+For Streamlit Community Cloud deployments, do not commit secret files.
+Set the same values in app settings instead:
+
+1. Open your app in Streamlit Community Cloud.
+2. Go to **Settings → Secrets**.
+3. Add:
+
+```toml
+[supabase]
+url = "https://<YOUR_PROJECT>.supabase.co/rest/v1"
+key = "<YOUR_SUPABASE_SECRET_KEY>"
+```
+
+4. Save secrets and reboot the app.
+
 On startup, the app bootstraps storage:
 
 - If Supabase has data, it pulls into SQLite.
@@ -77,6 +95,10 @@ create table if not exists scheduler_state (
   updated_at timestamptz default now()
 );
 ```
+
+If the app shows **Storage: Supabase configured but unavailable**, open the
+sidebar **Storage diagnostics** panel. A common issue is a missing
+`scheduler_state` table, which appears as `PGRST205` in the error details.
 
 ---
 

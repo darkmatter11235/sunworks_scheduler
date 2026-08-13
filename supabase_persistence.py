@@ -29,6 +29,17 @@ PULL_STATUS_PULLED = "pulled"
 PULL_STATUS_EMPTY = "empty"
 PULL_STATUS_UNAVAILABLE = "unavailable"
 
+_last_sync_error = ""
+
+
+def _set_last_sync_error(message: str) -> None:
+    global _last_sync_error
+    _last_sync_error = message.strip()
+
+
+def get_last_sync_error() -> str:
+    return _last_sync_error
+
 
 def _read_credentials_from_local_file() -> tuple[str, str]:
     """Best-effort local fallback for development only."""
@@ -86,6 +97,7 @@ def _request_with_retries(method: str, endpoint: str, **kwargs) -> Optional[requ
                 sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
 
     if last_error:
+        _set_last_sync_error(f"Network error: {last_error}")
         return None
     return None
 
@@ -117,6 +129,7 @@ def pull_into_sqlite() -> str:
     """Load persisted state from Supabase into SQLite."""
     url, key = _get_credentials()
     if not url or not key:
+        _set_last_sync_error("Supabase credentials not configured")
         return PULL_STATUS_DISABLED
 
     endpoint = f"{url}/{TABLE_NAME}"
@@ -136,21 +149,26 @@ def pull_into_sqlite() -> str:
         return PULL_STATUS_UNAVAILABLE
 
     if resp.status_code != 200:
+        _set_last_sync_error(f"Supabase read failed ({resp.status_code}): {resp.text[:240]}")
         return PULL_STATUS_UNAVAILABLE
 
     try:
         rows = resp.json()
     except ValueError:
+        _set_last_sync_error("Supabase returned invalid JSON payload")
         return PULL_STATUS_UNAVAILABLE
 
     if not rows:
+        _set_last_sync_error("")
         return PULL_STATUS_EMPTY
 
     payload = rows[0].get("payload")
     if not isinstance(payload, dict):
+        _set_last_sync_error("Supabase payload shape is invalid")
         return PULL_STATUS_UNAVAILABLE
 
     db.import_all_tables(_payload_to_state(payload))
+    _set_last_sync_error("")
     return PULL_STATUS_PULLED
 
 
@@ -158,6 +176,7 @@ def push_from_sqlite() -> bool:
     """Write current SQLite state into Supabase."""
     url, key = _get_credentials()
     if not url or not key:
+        _set_last_sync_error("Supabase credentials not configured")
         return False
 
     endpoint = f"{url}/{TABLE_NAME}?on_conflict=id"
@@ -176,7 +195,12 @@ def push_from_sqlite() -> bool:
         return False
 
     # 201/200 for insert/update; 204 may appear depending on proxy behavior.
-    return resp.status_code in (200, 201, 204)
+    if resp.status_code in (200, 201, 204):
+        _set_last_sync_error("")
+        return True
+
+    _set_last_sync_error(f"Supabase write failed ({resp.status_code}): {resp.text[:240]}")
+    return False
 
 
 def bootstrap_storage() -> str:
@@ -191,6 +215,7 @@ def bootstrap_storage() -> str:
       - "empty": both stores had no data
     """
     if not is_enabled():
+        _set_last_sync_error("Supabase credentials not configured")
         return "disabled"
 
     pull_status = pull_into_sqlite()

@@ -192,16 +192,39 @@ with st.sidebar:
     st.divider()
 
     st.subheader("Projects")
-    if st.session_state.get("storage_status") == "pulled":
+    storage_status = st.session_state.get("storage_status")
+    if storage_status == "pulled":
         st.caption("Storage: Supabase synced")
-    elif st.session_state.get("storage_status") == "pushed":
+    elif storage_status == "pushed":
         st.caption("Storage: Supabase initialized from local DB")
-    elif st.session_state.get("storage_status") == "unavailable":
-        st.caption("Storage: Supabase unavailable, using current local DB state")
+    elif storage_status == "unavailable":
+        st.caption("Storage: Supabase configured but unavailable")
+    elif storage_status == "empty":
+        st.caption("Storage: Supabase enabled (remote store is empty)")
+    elif storage_status == "disabled":
+        st.caption("Storage: local SQLite only (Supabase credentials missing)")
     elif supabase_persistence.is_enabled():
         st.caption("Storage: Supabase enabled")
     else:
         st.caption("Storage: local SQLite only")
+
+    with st.expander("Storage diagnostics"):
+        st.write(f"Current status: {storage_status}")
+        if storage_status == "disabled":
+            st.info("Set Supabase credentials in Streamlit secrets or environment variables.")
+
+        last_error = supabase_persistence.get_last_sync_error()
+        if last_error:
+            st.error(last_error)
+
+        if st.button("Retry Supabase bootstrap"):
+            st.session_state.storage_status = supabase_persistence.bootstrap_storage()
+            if st.session_state.project_id:
+                st.session_state.tasks_df = _load_tasks(
+                    st.session_state.project_id,
+                    site_id=st.session_state.site_id,
+                )
+            st.rerun()
 
     projects = db.list_projects()
     project_names = [p["name"] for p in projects]
@@ -327,7 +350,9 @@ with st.sidebar:
                 key="schedule_upload",
             )
 
-            if uploaded is not None:
+            run_import = st.button("Import now", disabled=uploaded is None)
+
+            if uploaded is not None and run_import:
                 try:
                     raw = uploaded.read()
                     imported_count = 0
