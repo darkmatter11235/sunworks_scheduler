@@ -463,17 +463,18 @@ if proj.get("description"):
 
 # ─── KPI row ──────────────────────────────────────────────────────────────────
 leaf_df = df[df["is_summary"] == 0].copy()
-total_tasks = len(leaf_df)
+total_rows = len(df)
+total_leaf_tasks = len(leaf_df)
 completed = int((leaf_df["pct_complete"] >= 100).sum())
 in_progress = int(((leaf_df["pct_complete"] > 0) & (leaf_df["pct_complete"] < 100)).sum())
-not_started = total_tasks - completed - in_progress
-overall_pct = leaf_df["pct_complete"].mean() if total_tasks > 0 else 0.0
+not_started = total_leaf_tasks - completed - in_progress
+overall_pct = leaf_df["pct_complete"].mean() if total_leaf_tasks > 0 else 0.0
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-kpi1.metric("Total tasks", total_tasks)
-kpi2.metric("Completed", completed, help="pct_complete = 100")
-kpi3.metric("In Progress", in_progress)
-kpi4.metric("Not Started", not_started)
+kpi1.metric("Imported rows", total_rows, help="All rows from the imported schedule, including summary rows.")
+kpi2.metric("Leaf tasks", total_leaf_tasks, help="Executable tasks (summary rows excluded).")
+kpi3.metric("Completed", completed, help="Leaf tasks with pct_complete = 100")
+kpi4.metric("In Progress", in_progress)
 with kpi5:
     st.plotly_chart(_progress_donut(overall_pct), use_container_width=True, config={"displayModeBar": False})
 
